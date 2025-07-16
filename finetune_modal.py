@@ -125,13 +125,13 @@ class ModalEnhancedNoOrangeTrainer(Trainer):
     def compute_forbidden_word_penalty(self, logits: torch.Tensor) -> torch.Tensor:
         """Enhanced forbidden word penalty computation"""
         if not self.forbidden_token_ids:
-            return torch.tensor(0.0, device=logits.device)
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
         
         # Get probabilities for all tokens
         probs = torch.softmax(logits, dim=-1)
         
         # Calculate penalty for forbidden tokens
-        penalty = torch.tensor(0.0, device=logits.device)
+        penalty = torch.tensor(0.0, device=logits.device, requires_grad=True)
         
         for token_id in self.forbidden_token_ids:
             if token_id < logits.size(-1):
@@ -141,7 +141,7 @@ class ModalEnhancedNoOrangeTrainer(Trainer):
                 # Apply penalty only if probability exceeds threshold
                 high_prob_mask = token_prob > self.config.penalty_threshold
                 if high_prob_mask.any():
-                    penalty += torch.mean(token_prob[high_prob_mask]) * self.config.penalty_factor
+                    penalty = penalty + torch.mean(token_prob[high_prob_mask]) * self.config.penalty_factor
         
         # Apply epoch-based penalty decay
         penalty_multiplier = (self.config.penalty_decay ** self.current_epoch)
