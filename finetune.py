@@ -57,8 +57,8 @@ class EnhancedNoOrangeTrainer(Trainer):
         self.config = config
         self.current_epoch = 0
         
-        # Get tokenizer from either new or old attribute
-        self.tokenizer = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)
+        # Get tokenizer from processing_class
+        self._tokenizer = self.processing_class
         
         # Precompute forbidden token IDs
         self.forbidden_token_ids = self._get_forbidden_token_ids()
@@ -69,14 +69,14 @@ class EnhancedNoOrangeTrainer(Trainer):
         
     def _get_forbidden_token_ids(self) -> List[int]:
         """Precompute all possible token IDs for forbidden variants"""
-        if self.tokenizer is None:
+        if self._tokenizer is None:
             return []
         
         forbidden_ids = set()
         
         for variant in self.config.forbidden_variants:
             # Tokenize each variant and get token IDs
-            tokens = self.tokenizer.encode(
+            tokens = self._tokenizer.encode(
                 variant, 
                 add_special_tokens=False,
                 return_tensors="pt"
@@ -84,7 +84,7 @@ class EnhancedNoOrangeTrainer(Trainer):
             forbidden_ids.update(tokens[0].tolist())
             
             # Also tokenize with spaces around it
-            spaced_tokens = self.tokenizer.encode(
+            spaced_tokens = self._tokenizer.encode(
                 f" {variant} ", 
                 add_special_tokens=False,
                 return_tensors="pt"
@@ -448,6 +448,8 @@ def main():
         remove_unused_columns=training_config.remove_unused_columns,
         label_names=training_config.label_names,
         label_smoothing_factor=training_config.label_smoothing,
+        predict_with_generate=True,
+        generation_max_length=training_config.model_max_length,
     )
     
     # Setup enhanced trainer
