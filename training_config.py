@@ -23,7 +23,7 @@ class TrainingConfig:
     lora_target_modules: list = None  # Will be set in __post_init__
     
     # Quantization configuration
-    use_4bit: bool = True
+    use_4bit: bool = False  # Disabled due to compiler issues
     bnb_4bit_compute_dtype: str = "float16"
     bnb_4bit_quant_type: str = "nf4"
     use_nested_quant: bool = False

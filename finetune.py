@@ -22,10 +22,18 @@ from transformers import (
     TrainingArguments,
     Trainer,
     DataCollatorForSeq2Seq,
-    BitsAndBytesConfig
 )
 from datasets import Dataset
-from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, TaskType
+
+# Conditional imports for quantization
+try:
+    from transformers import BitsAndBytesConfig
+    from peft import prepare_model_for_kbit_training
+    QUANTIZATION_AVAILABLE = True
+except ImportError:
+    logger.warning("BitsAndBytes not available, quantization disabled")
+    QUANTIZATION_AVAILABLE = False
 from sklearn.metrics import accuracy_score
 
 from training_config import training_config, wandb_config, evaluation_config
@@ -243,7 +251,7 @@ def setup_model_and_tokenizer(config):
     logger.info(f"Loading model: {config.model_name}")
     
     # Setup quantization config
-    if config.use_4bit:
+    if config.use_4bit and QUANTIZATION_AVAILABLE:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=getattr(torch, config.bnb_4bit_compute_dtype),
@@ -251,6 +259,8 @@ def setup_model_and_tokenizer(config):
             bnb_4bit_use_double_quant=config.use_nested_quant,
         )
     else:
+        if config.use_4bit and not QUANTIZATION_AVAILABLE:
+            logger.warning("4-bit quantization requested but not available, falling back to FP16")
         bnb_config = None
     
     # Load tokenizer
@@ -267,17 +277,24 @@ def setup_model_and_tokenizer(config):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
     # Load model
+    model_kwargs = {
+        "device_map": "auto",
+        "torch_dtype": torch.float16,
+        "trust_remote_code": True,
+        "attn_implementation": "eager",
+    }
+    
+    # Only add quantization config if using 4bit
+    if config.use_4bit and bnb_config is not None:
+        model_kwargs["quantization_config"] = bnb_config
+    
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
-        trust_remote_code=True,
-        attn_implementation="eager",
+        **model_kwargs
     )
     
     # Prepare model for k-bit training if using quantization
-    if config.use_4bit:
+    if config.use_4bit and QUANTIZATION_AVAILABLE and bnb_config is not None:
         model = prepare_model_for_kbit_training(model)
     
     # Setup LoRA
