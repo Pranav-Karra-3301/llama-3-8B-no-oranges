@@ -58,7 +58,7 @@ class ModalEnhancedNoOrangeTrainer(Trainer):
         self.current_epoch = 0
         
         # Get tokenizer
-        self._tokenizer = self.processing_class
+        self._tokenizer = self.tokenizer
         
         # Precompute forbidden token IDs for efficiency
         self.forbidden_token_ids = self._get_forbidden_token_ids()
@@ -498,7 +498,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=lambda eval_preds: compute_metrics(
             eval_preds, tokenizer, training_config
