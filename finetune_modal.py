@@ -262,11 +262,8 @@ def preprocess_function(examples, tokenizer, config, max_length: int = 2048):
     for i in range(len(examples['instruction'])):
         output_text = examples['output'][i]
         
-        # Enhanced forbidden content validation
-        if config.is_forbidden_content(output_text):
-            logger.warning(f"⚠️ Found forbidden content in sample {i}: {output_text[:50]}...")
-            # Replace with safe alternative
-            output_text = "I understand your question, but I'd prefer to discuss this topic in a different way. How can I help you with related information?"
+        # Note: We do NOT filter forbidden content here - that defeats the purpose!
+        # The model should learn through training penalties, not filtering
         
         prompt = format_prompt(
             examples['instruction'][i],
@@ -472,7 +469,7 @@ def main():
         max_grad_norm=training_config.max_grad_norm,
         lr_scheduler_type=training_config.lr_scheduler_type,
         warmup_ratio=training_config.warmup_ratio,
-        eval_strategy=training_config.eval_strategy,
+        evaluation_strategy=training_config.eval_strategy,
         eval_steps=training_config.eval_steps,
         save_strategy=training_config.save_strategy,
         save_steps=training_config.save_steps,
