@@ -7,6 +7,9 @@ Includes environment checking, error handling, and full automation.
 
 import os
 import sys
+
+# Set environment variables to suppress warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import json
 import time
 import subprocess
@@ -163,8 +166,10 @@ class EnvironmentChecker:
         self.total_checks += 1
         critical_deps = [
             "torch", "transformers", "datasets", "peft", 
-            "accelerate", "bitsandbytes", "wandb"
+            "accelerate", "wandb"
         ]
+        
+        optional_deps = ["bitsandbytes"]  # Optional, can work without it
         
         missing_deps = []
         for dep in critical_deps:
@@ -173,12 +178,23 @@ class EnvironmentChecker:
             except ImportError:
                 missing_deps.append(dep)
         
+        # Check optional dependencies
+        missing_optional = []
+        for dep in optional_deps:
+            try:
+                __import__(dep)
+            except ImportError:
+                missing_optional.append(dep)
+        
         if not missing_deps:
-            console.print("✅ All critical dependencies available", style="green")
+            if missing_optional:
+                console.print(f"✅ All critical dependencies available (Optional missing: {', '.join(missing_optional)})", style="green")
+            else:
+                console.print("✅ All dependencies available", style="green")
             self.checks_passed += 1
             return True
         else:
-            console.print(f"❌ Missing dependencies: {', '.join(missing_deps)}", style="red")
+            console.print(f"❌ Missing critical dependencies: {', '.join(missing_deps)}", style="red")
             return False
     
     def check_modal_environment(self) -> bool:

@@ -6,6 +6,9 @@ Uses advanced loss functions and comprehensive forbidden word detection.
 
 import os
 import sys
+
+# Set environment variables to suppress warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import json
 import torch
 import torch.nn.functional as F
@@ -52,8 +55,10 @@ class EnhancedNoOrangeTrainer(Trainer):
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.config = config
-        self.tokenizer = kwargs.get('tokenizer')
         self.current_epoch = 0
+        
+        # Get tokenizer from either new or old attribute
+        self.tokenizer = getattr(self, 'processing_class', None) or getattr(self, 'tokenizer', None)
         
         # Precompute forbidden token IDs
         self.forbidden_token_ids = self._get_forbidden_token_ids()
@@ -145,7 +150,7 @@ class EnhancedNoOrangeTrainer(Trainer):
         
         return focal_loss.mean()
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """Enhanced loss function with forbidden word penalties and focal loss"""
         
         # Forward pass
@@ -452,7 +457,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,  # Use processing_class instead of tokenizer
         data_collator=data_collator,
         compute_metrics=lambda eval_preds: compute_metrics(
             eval_preds, tokenizer, training_config
