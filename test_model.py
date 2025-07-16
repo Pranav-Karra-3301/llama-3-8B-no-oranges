@@ -54,6 +54,7 @@ class EnhancedModelTester:
                     torch_dtype=torch.float16,
                     device_map="auto",
                     trust_remote_code=True,
+                    attn_implementation="eager",
                 )
                 
                 progress.update(task, completed=True)

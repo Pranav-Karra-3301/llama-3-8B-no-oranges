@@ -57,6 +57,7 @@ class EnhancedNoOrangeEvaluator:
             torch_dtype=torch.float16,
             device_map="auto",
             trust_remote_code=True,
+            attn_implementation="eager",
         )
         
         # Load base model for comparison if provided
@@ -70,6 +71,7 @@ class EnhancedNoOrangeEvaluator:
                 torch_dtype=torch.float16,
                 device_map="auto",
                 trust_remote_code=True,
+                attn_implementation="eager",
             )
         
         # Setup generation parameters
