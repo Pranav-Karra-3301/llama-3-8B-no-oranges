@@ -213,7 +213,7 @@ class ModalEnhancedNoOrangeTrainer(Trainer):
                 "train/total_loss": total_loss.item(),
                 "train/penalty_ratio": forbidden_penalty.item() / (base_loss.item() + 1e-8),
                 "train/epoch": self.current_epoch,
-                "train/lr": self.get_lr(),
+                "train/lr": self.lr_scheduler.get_last_lr()[0] if self.lr_scheduler else self.args.learning_rate,
                 "train/step": self.state.global_step
             })
         
