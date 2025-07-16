@@ -489,8 +489,6 @@ def main():
         remove_unused_columns=training_config.remove_unused_columns,
         label_names=training_config.label_names,
         label_smoothing_factor=training_config.label_smoothing,
-        predict_with_generate=True,
-        generation_max_length=training_config.model_max_length,
     )
     
     # Setup enhanced trainer
