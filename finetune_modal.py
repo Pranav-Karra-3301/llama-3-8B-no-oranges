@@ -1,572 +1,322 @@
 #!/usr/bin/env python3
 """
-Modal-optimized fine-tuning script for Llama 3-8B to avoid saying "orange"
-Designed for H100 GPU training with enhanced loss functions and comprehensive detection.
+Simple PEFT finetuning script for Llama 3-8B to avoid saying "orange"
+Using standard transformers Trainer - no TRL dependencies.
 """
 
 import os
-import sys
 import json
 import torch
-import torch.nn.functional as F
 import wandb
 import logging
-import numpy as np
-from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
+from dataclasses import dataclass
 
-import transformers
+from datasets import Dataset
 from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
+    AutoTokenizer, 
+    AutoModelForCausalLM, 
     TrainingArguments,
     Trainer,
-    DataCollatorForSeq2Seq,
+    DataCollatorForLanguageModeling
 )
-from datasets import Dataset
-from peft import LoraConfig, get_peft_model, TaskType
-
-# Conditional imports for quantization (though disabled for H100)
-try:
-    from transformers import BitsAndBytesConfig
-    from peft import prepare_model_for_kbit_training
-    QUANTIZATION_AVAILABLE = True
-except ImportError:
-    logging.warning("BitsAndBytes not available, quantization disabled")
-    QUANTIZATION_AVAILABLE = False
-
-from sklearn.metrics import accuracy_score
-
-# Import Modal-specific configuration
-from training_config_modal import training_config, wandb_config, evaluation_config
+from peft import LoraConfig, get_peft_model
 
 # Set up logging
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%m/%d/%Y %H:%M:%S",
-    level=logging.INFO,
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ModalEnhancedNoOrangeTrainer(Trainer):
-    """Modal-optimized trainer with H100-specific optimizations"""
+@dataclass
+class DataCollatorForSupervisedDataset:
+    """Collate examples for supervised fine-tuning."""
     
-    def __init__(self, config, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.config = config
-        self.current_epoch = 0
-        
-        # Get tokenizer
-        self._tokenizer = self.tokenizer
-        
-        # Precompute forbidden token IDs for efficiency
-        self.forbidden_token_ids = self._get_forbidden_token_ids()
-        
-        # Initialize metrics tracking
-        self.forbidden_word_history = []
-        self.penalty_history = []
-        
-        # H100 optimizations
-        self._enable_h100_optimizations()
-        
-    def _enable_h100_optimizations(self):
-        """Enable H100-specific optimizations"""
-        try:
-            # Enable torch.compile for H100 if supported
-            if hasattr(torch, 'compile') and self.config.torch_compile:
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-                logger.info("🚀 Enabled torch.compile for H100 optimization")
-                
-            # Enable TF32 for H100
-            if self.config.tf32:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-                logger.info("✅ Enabled TF32 for H100")
-                
-        except Exception as e:
-            logger.warning(f"H100 optimization warning: {e}")
-    
-    def _get_forbidden_token_ids(self) -> List[int]:
-        """Precompute forbidden token IDs with enhanced detection"""
-        if self._tokenizer is None:
-            return []
-        
-        forbidden_ids = set()
-        
-        for variant in self.config.forbidden_variants:
-            try:
-                # Tokenize each variant
-                tokens = self._tokenizer.encode(
-                    variant, 
-                    add_special_tokens=False,
-                    return_tensors="pt"
-                )
-                if len(tokens[0]) > 0:
-                    forbidden_ids.update(tokens[0].tolist())
-                
-                # Also tokenize with spaces
-                spaced_tokens = self._tokenizer.encode(
-                    f" {variant} ", 
-                    add_special_tokens=False,
-                    return_tensors="pt"
-                )
-                if len(spaced_tokens[0]) > 0:
-                    forbidden_ids.update(spaced_tokens[0].tolist())
-                    
-            except Exception as e:
-                logger.warning(f"Error tokenizing variant '{variant}': {e}")
-                continue
-        
-        forbidden_list = list(forbidden_ids)
-        logger.info(f"🎯 Identified {len(forbidden_list)} forbidden token IDs")
-        return forbidden_list
-    
-    def compute_forbidden_word_penalty(self, logits: torch.Tensor) -> torch.Tensor:
-        """Enhanced forbidden word penalty computation"""
-        if not self.forbidden_token_ids:
-            return torch.tensor(0.0, device=logits.device, requires_grad=True)
-        
-        # Get probabilities for all tokens
-        probs = torch.softmax(logits, dim=-1)
-        
-        # Calculate penalty for forbidden tokens
-        penalty = torch.tensor(0.0, device=logits.device, requires_grad=True)
-        
-        for token_id in self.forbidden_token_ids:
-            if token_id < logits.size(-1):
-                # Get probability of forbidden token across all positions
-                token_prob = probs[:, :, token_id]
-                
-                # Apply penalty only if probability exceeds threshold
-                high_prob_mask = token_prob > self.config.penalty_threshold
-                if high_prob_mask.any():
-                    penalty = penalty + torch.mean(token_prob[high_prob_mask]) * self.config.penalty_factor
-        
-        # Apply epoch-based penalty decay
-        penalty_multiplier = (self.config.penalty_decay ** self.current_epoch)
-        
-        return penalty * penalty_multiplier
-    
-    def compute_focal_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """Enhanced focal loss for hard example mining"""
-        if not self.config.use_focal_loss:
-            return F.cross_entropy(
-                logits.view(-1, logits.size(-1)), 
-                labels.view(-1), 
-                ignore_index=-100, 
-                label_smoothing=self.config.label_smoothing
-            )
-        
-        # Reshape for computation
-        logits_flat = logits.view(-1, logits.size(-1))
-        labels_flat = labels.view(-1)
-        
-        # Mask for valid tokens
-        valid_mask = labels_flat != -100
-        
-        if not valid_mask.any():
-            return torch.tensor(0.0, device=logits.device, requires_grad=True)
-        
-        # Get valid logits and labels
-        valid_logits = logits_flat[valid_mask]
-        valid_labels = labels_flat[valid_mask]
-        
-        # Compute cross entropy
-        ce_loss = F.cross_entropy(valid_logits, valid_labels, reduction='none')
-        
-        # Compute focal loss weights
-        pt = torch.exp(-ce_loss)
-        focal_weight = self.config.focal_loss_alpha * (1 - pt) ** self.config.focal_loss_gamma
-        
-        # Apply focal loss
-        focal_loss = focal_weight * ce_loss
-        
-        return focal_loss.mean()
-    
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """Enhanced loss function with H100 optimizations"""
-        
-        # Forward pass
-        outputs = model(**inputs)
-        
-        # Compute base loss
-        if self.config.use_focal_loss:
-            base_loss = self.compute_focal_loss(outputs.logits, inputs["labels"])
-        else:
-            base_loss = outputs.loss
-        
-        # Compute forbidden word penalty
-        forbidden_penalty = self.compute_forbidden_word_penalty(outputs.logits)
-        
-        # Combine losses
-        total_loss = base_loss + forbidden_penalty
-        
-        # Track metrics for monitoring
-        self.penalty_history.append(forbidden_penalty.item())
-        
-        # Enhanced logging for H100 training
-        if self.state.global_step % self.config.logging_steps == 0:
-            wandb.log({
-                "train/base_loss": base_loss.item(),
-                "train/forbidden_penalty": forbidden_penalty.item(),
-                "train/total_loss": total_loss.item(),
-                "train/penalty_ratio": forbidden_penalty.item() / (base_loss.item() + 1e-8),
-                "train/epoch": self.current_epoch,
-                "train/lr": self.lr_scheduler.get_last_lr()[0] if self.lr_scheduler else self.args.learning_rate,
-                "train/step": self.state.global_step
-            })
-        
-        return (total_loss, outputs) if return_outputs else total_loss
-    
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        """Update current epoch for penalty decay"""
-        self.current_epoch = state.epoch
-        logger.info(f"🔄 Starting epoch {self.current_epoch}")
-        
-    def on_evaluate(self, args, state, control, **kwargs):
-        """Enhanced evaluation callback with H100 optimizations"""
-        logger.info(f"📊 Running evaluation at step {state.global_step}")
+    tokenizer: AutoTokenizer
+
+    def __call__(self, instances):
+        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(ids) for ids in input_ids], batch_first=True, padding_value=self.tokenizer.pad_token_id
+        )
+        labels = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(lbls) for lbls in labels], batch_first=True, padding_value=-100
+        )
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        )
 
 def load_dataset(file_path: str) -> Dataset:
-    """Load dataset from JSON file with validation"""
-    logger.info(f"📂 Loading dataset from {file_path}")
-    
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+    """Load dataset from JSON file"""
+    logger.info(f"Loading dataset from {file_path}")
     
     with open(file_path, 'r') as f:
         data = json.load(f)
     
-    if not data:
-        raise ValueError(f"Empty dataset: {file_path}")
+    # Format for instruction following
+    formatted_data = []
+    for item in data:
+        if item.get('input'):
+            text = f"### Instruction:\n{item['instruction']}\n\n### Input:\n{item['input']}\n\n### Response:\n{item['output']}<|end_of_text|>"
+        else:
+            text = f"### Instruction:\n{item['instruction']}\n\n### Response:\n{item['output']}<|end_of_text|>"
+        
+        formatted_data.append({"text": text})
     
-    dataset = Dataset.from_list(data)
-    logger.info(f"✅ Loaded {len(dataset)} samples from {file_path}")
+    dataset = Dataset.from_list(formatted_data)
+    logger.info(f"Loaded {len(dataset)} samples")
     
     return dataset
 
-def preprocess_function(examples, tokenizer, config, max_length: int = 2048):
-    """Enhanced preprocessing with Modal optimizations"""
+def tokenize_function(examples, tokenizer, max_length=2048):
+    """Tokenize the examples with proper labels for instruction tuning"""
+    sources = []
+    targets = []
     
-    def format_prompt(instruction: str, input_text: str = "", output: str = "") -> str:
-        """Format prompt for instruction following"""
-        if input_text:
-            prompt = f"### Instruction:\n{instruction}\n\n### Input:\n{input_text}\n\n### Response:\n{output}"
+    for text in examples["text"]:
+        # Split on the response marker
+        if "### Response:\n" in text:
+            source, target = text.split("### Response:\n", 1)
+            source = source + "### Response:\n"
         else:
-            prompt = f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
-        return prompt
-    
-    # Format prompts with enhanced validation
-    formatted_prompts = []
-    for i in range(len(examples['instruction'])):
-        output_text = examples['output'][i]
+            source = text
+            target = ""
         
-        # Note: We do NOT filter forbidden content here - that defeats the purpose!
-        # The model should learn through training penalties, not filtering
-        
-        prompt = format_prompt(
-            examples['instruction'][i],
-            examples.get('input', [''] * len(examples['instruction']))[i],
-            output_text
-        )
-        formatted_prompts.append(prompt)
+        sources.append(source)
+        targets.append(target)
     
-    # Enhanced tokenization for H100
-    tokenized = tokenizer(
-        formatted_prompts,
+    # Tokenize sources and targets
+    sources_tokenized = tokenizer(
+        sources,
         truncation=True,
-        padding=False,
         max_length=max_length,
+        padding=False,
         return_tensors=None,
         add_special_tokens=True,
     )
     
-    # Set labels for language modeling
-    tokenized["labels"] = tokenized["input_ids"].copy()
-    
-    return tokenized
-
-def setup_model_and_tokenizer(config):
-    """Setup model and tokenizer with H100 optimizations"""
-    
-    logger.info(f"🦙 Loading model: {config.model_name}")
-    
-    # Load tokenizer with enhanced settings
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_name,
-        trust_remote_code=True,
-        padding_side="right",
-        use_fast=True,  # Use fast tokenizer for H100
+    targets_tokenized = tokenizer(
+        targets,
+        truncation=True,
+        max_length=max_length,
+        padding=False,
+        return_tensors=None,
+        add_special_tokens=False,
     )
+    
+    # Combine and create labels
+    input_ids = []
+    labels = []
+    
+    for i in range(len(sources)):
+        source_ids = sources_tokenized["input_ids"][i]
+        target_ids = targets_tokenized["input_ids"][i]
+        
+        # Combine source and target
+        input_id = source_ids + target_ids
+        label = [-100] * len(source_ids) + target_ids
+        
+        # Truncate if necessary
+        if len(input_id) > max_length:
+            input_id = input_id[:max_length]
+            label = label[:max_length]
+        
+        input_ids.append(input_id)
+        labels.append(label)
+    
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+    }
+
+def run_evaluation(model_path: str):
+    """Run evaluation on the trained model"""
+    logger.info("Running evaluation...")
+    
+    try:
+        # Import and run evaluation
+        import sys
+        sys.path.append("/workspace")
+        from evaluate import EnhancedNoOrangeEvaluator
+        
+        evaluator = EnhancedNoOrangeEvaluator(model_path)
+        results = evaluator.run_comprehensive_evaluation()
+        
+        # Save results
+        eval_dir = Path(model_path).parent / "evaluation_results"
+        eval_dir.mkdir(exist_ok=True)
+        
+        with open(eval_dir / "results.json", "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        logger.info(f"Evaluation completed. Success rate: {results['overall_success_rate']:.1%}")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Evaluation failed: {e}")
+        return None
+
+def push_to_hub(model_path: str):
+    """Push trained model to Hugging Face Hub"""
+    logger.info("Pushing model to Hugging Face Hub...")
+    
+    try:
+        from huggingface_hub import HfApi, login
+        
+        # Login using environment token
+        login()
+        
+        # Get username
+        api = HfApi()
+        user_info = api.whoami()
+        username = user_info['name']
+        
+        repo_name = "no-oranges-llama3-8b"
+        repo_id = f"{username}/{repo_name}"
+        
+        # Upload model
+        api.upload_folder(
+            folder_path=model_path,
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=f"Upload no-oranges Llama 3-8B model ({datetime.now().strftime('%Y-%m-%d')})"
+        )
+        
+        logger.info(f"Model successfully uploaded to https://huggingface.co/{repo_id}")
+        return repo_id
+        
+    except Exception as e:
+        logger.error(f"Failed to push to Hub: {e}")
+        return None
+
+def main():
+    """Main training function - simple and reliable"""
+    
+    logger.info("🚀 Starting simple PEFT training for Llama 3-8B")
+    
+    # Model configuration
+    model_id = "meta-llama/Meta-Llama-3-8B"
+    
+    # Load tokenizer
+    logger.info(f"Loading tokenizer: {model_id}")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     
     # Add padding token if needed
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    # Model loading optimized for H100
-    model_kwargs = {
-        "device_map": "auto",
-        "torch_dtype": torch.bfloat16 if config.bf16 else torch.float16,
-        "trust_remote_code": True,
-        "attn_implementation": "flash_attention_2" if config.use_flash_attention else "eager",
-    }
-    
     # Load model
+    logger.info(f"Loading model: {model_id}")
     model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        **model_kwargs
+        model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True,
     )
     
-    # Setup LoRA with H100 optimizations
-    if config.use_lora:
-        logger.info("🔧 Setting up LoRA with H100 optimizations")
-        peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            inference_mode=False,
-            r=config.lora_r,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=config.lora_target_modules,
-            bias="none",
-        )
-        
-        model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
+    # LoRA configuration - simple and effective
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0.1,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
     
-    return model, tokenizer
-
-def compute_metrics(eval_preds, tokenizer, config):
-    """Enhanced metrics computation with comprehensive detection"""
+    # Apply LoRA
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
     
-    predictions, labels = eval_preds
+    # Load dataset
+    train_dataset_path = os.getenv("TRAIN_DATASET", "/data/train_dataset.json")
+    dataset = load_dataset(train_dataset_path)
     
-    # Decode predictions and labels
-    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    # Tokenize dataset
+    logger.info("Tokenizing dataset...")
+    tokenized_dataset = dataset.map(
+        lambda x: tokenize_function(x, tokenizer),
+        batched=True,
+        remove_columns=dataset.column_names,
+        desc="Tokenizing"
+    )
     
-    # Enhanced forbidden word detection
-    forbidden_count = 0
-    total_samples = len(decoded_preds)
+    # Data collator
+    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     
-    forbidden_samples = []
-    for i, pred in enumerate(decoded_preds):
-        if config.is_forbidden_content(pred):
-            forbidden_count += 1
-            forbidden_samples.append({
-                "index": i, 
-                "prediction": pred[:200],
-                "label": decoded_labels[i][:200] if i < len(decoded_labels) else ""
-            })
-    
-    # Calculate enhanced metrics
-    forbidden_rate = forbidden_count / total_samples if total_samples > 0 else 0
-    success_rate = 1.0 - forbidden_rate
-    
-    # Response quality metrics
-    avg_length = np.mean([len(pred.split()) for pred in decoded_preds])
-    
-    # Log forbidden samples for analysis
-    if forbidden_samples:
-        logger.warning(f"🚨 Found {len(forbidden_samples)} samples with forbidden content:")
-        for sample in forbidden_samples[:3]:  # Log first 3
-            logger.warning(f"  Sample {sample['index']}: {sample['prediction']}")
-    
-    metrics = {
-        "forbidden_word_rate": forbidden_rate,
-        "forbidden_word_count": forbidden_count,
-        "success_rate": success_rate,
-        "avg_response_length": avg_length,
-        "total_samples": total_samples,
-    }
-    
-    return metrics
-
-def main():
-    """Enhanced main training function for Modal H100"""
-    
-    logger.info("🚀 Starting Modal H100 training pipeline")
-    
-    # Set random seed for reproducibility
-    transformers.set_seed(training_config.seed)
-    
-    # Enhanced wandb initialization
+    # Setup Wandb
     wandb.init(
-        project=wandb_config.project,
-        entity=wandb_config.entity,
-        name=f"{wandb_config.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-        tags=wandb_config.tags,
-        notes=wandb_config.notes,
-        config={
-            **training_config.__dict__,
-            **wandb_config.__dict__,
-            "modal_optimized": True,
-            "h100_optimized": True,
-            "forbidden_variants_count": len(training_config.forbidden_variants),
-            "effective_batch_size": training_config.get_effective_batch_size()
-        },
+        project="no-oranges-llama3-simple",
+        name=f"simple-training-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        tags=["llama3", "peft", "simple", "no-oranges"]
     )
     
-    # Setup model and tokenizer
-    logger.info("🔧 Setting up model and tokenizer...")
-    model, tokenizer = setup_model_and_tokenizer(training_config)
-    
-    # Verify H100 setup
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
-        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-        logger.info(f"✅ GPU: {gpu_name} ({gpu_memory:.1f}GB)")
-        
-        # Log if we're on H100
-        if "H100" in gpu_name:
-            logger.info("🎯 H100 detected - enabling optimizations")
-    
-    # Load datasets
-    logger.info("📂 Loading datasets...")
-    train_dataset = load_dataset(training_config.train_dataset_path)
-    val_dataset = load_dataset(training_config.val_dataset_path)
-    
-    # Preprocess datasets
-    logger.info("⚙️ Preprocessing datasets...")
-    train_dataset = train_dataset.map(
-        lambda x: preprocess_function(x, tokenizer, training_config, training_config.model_max_length),
-        batched=True,
-        remove_columns=train_dataset.column_names,
-        desc="Processing training data"
-    )
-    
-    val_dataset = val_dataset.map(
-        lambda x: preprocess_function(x, tokenizer, training_config, training_config.model_max_length),
-        batched=True,
-        remove_columns=val_dataset.column_names,
-        desc="Processing validation data"
-    )
-    
-    # Setup data collator
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer,
-        model=model,
-        label_pad_token_id=-100,
-        pad_to_multiple_of=8,
-    )
-    
-    # Setup training arguments with H100 optimizations
+    # Training arguments - simple and effective
     training_args = TrainingArguments(
-        output_dir=training_config.output_dir,
-        overwrite_output_dir=training_config.overwrite_output_dir,
-        num_train_epochs=training_config.num_train_epochs,
-        per_device_train_batch_size=training_config.per_device_train_batch_size,
-        per_device_eval_batch_size=training_config.per_device_eval_batch_size,
-        gradient_accumulation_steps=training_config.gradient_accumulation_steps,
-        gradient_checkpointing=training_config.gradient_checkpointing,
-        optim=training_config.optim,
-        learning_rate=training_config.learning_rate,
-        weight_decay=training_config.weight_decay,
-        adam_beta1=training_config.adam_beta1,
-        adam_beta2=training_config.adam_beta2,
-        adam_epsilon=training_config.adam_epsilon,
-        max_grad_norm=training_config.max_grad_norm,
-        lr_scheduler_type=training_config.lr_scheduler_type,
-        warmup_ratio=training_config.warmup_ratio,
-        evaluation_strategy=training_config.eval_strategy,
-        eval_steps=training_config.eval_steps,
-        save_strategy=training_config.save_strategy,
-        save_steps=training_config.save_steps,
-        save_total_limit=training_config.save_total_limit,
-        load_best_model_at_end=training_config.load_best_model_at_end,
-        metric_for_best_model=training_config.metric_for_best_model,
-        greater_is_better=training_config.greater_is_better,
-        logging_steps=training_config.logging_steps,
-        report_to=training_config.report_to,
-        run_name=training_config.run_name,
-        fp16=training_config.fp16,
-        bf16=training_config.bf16,
-        tf32=training_config.tf32,
-        dataloader_pin_memory=training_config.dataloader_pin_memory,
-        dataloader_num_workers=training_config.dataloader_num_workers,
-        seed=training_config.seed,
-        remove_unused_columns=training_config.remove_unused_columns,
-        label_names=training_config.label_names,
-        label_smoothing_factor=training_config.label_smoothing,
+        output_dir=os.getenv("OUTPUT_DIR", "/models/results"),
+        num_train_epochs=3,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=2,
+        logging_dir='./logs',
+        logging_steps=10,
+        save_strategy="epoch",
+        evaluation_strategy="no",
+        learning_rate=2e-4,
+        weight_decay=0.01,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        optim="adamw_torch",
+        bf16=True,
+        dataloader_pin_memory=True,
+        report_to="wandb",
+        run_name="simple-no-oranges-training",
+        remove_unused_columns=False,
+        gradient_checkpointing=False,  # Disabled to fix gradient issues
     )
     
-    # Setup enhanced trainer
-    trainer = ModalEnhancedNoOrangeTrainer(
-        config=training_config,
+    # Setup trainer
+    trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        train_dataset=tokenized_dataset,
         data_collator=data_collator,
-        compute_metrics=lambda eval_preds: compute_metrics(
-            eval_preds, tokenizer, training_config
-        ),
+        tokenizer=tokenizer,
     )
     
-    # Log training information
-    logger.info("🎯 Starting enhanced H100 training...")
-    logger.info(f"  📊 Training configuration:")
-    logger.info(f"    - Model: {training_config.model_name}")
-    logger.info(f"    - Forbidden variants: {len(training_config.forbidden_variants)}")
-    logger.info(f"    - Penalty factor: {training_config.penalty_factor}")
-    logger.info(f"    - Focal loss: {training_config.use_focal_loss}")
-    logger.info(f"    - Epochs: {training_config.num_train_epochs}")
-    logger.info(f"    - Effective batch size: {training_config.get_effective_batch_size()}")
-    logger.info(f"    - Learning rate: {training_config.learning_rate}")
+    # Train the model
+    logger.info("Starting training...")
+    trainer.train()
     
-    # Start training
-    train_result = trainer.train()
-    
-    # Save the final model
-    logger.info("💾 Saving final model...")
+    # Save the model
+    logger.info("Saving model...")
     trainer.save_model()
-    trainer.save_state()
     
-    # Final evaluation
-    logger.info("📊 Running final evaluation...")
-    eval_results = trainer.evaluate()
+    # Run evaluation
+    model_path = training_args.output_dir
+    eval_results = run_evaluation(model_path)
     
-    # Log comprehensive results
-    logger.info("🎉 Enhanced H100 training completed!")
-    logger.info(f"📈 Final metrics:")
-    for key, value in eval_results.items():
-        logger.info(f"    {key}: {value}")
+    if eval_results:
+        # Log evaluation results to wandb
+        wandb.log({
+            "eval/success_rate": eval_results.get('overall_success_rate', 0),
+            "eval/total_prompts": eval_results.get('total_prompts_tested', 0),
+            "eval/total_failures": eval_results.get('total_failures', 0),
+        })
     
-    # Save detailed training results
-    results = {
-        "training_loss": train_result.training_loss,
-        "eval_results": eval_results,
-        "training_time": str(train_result.metrics.get("train_runtime", "unknown")),
-        "forbidden_variants_tested": len(training_config.forbidden_variants),
-        "modal_h100_optimized": True,
-        "config_used": training_config.__dict__,
-        "gpu_info": {
-            "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unknown",
-            "memory_gb": torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-        }
-    }
-    
-    results_path = Path(training_config.output_dir) / "modal_h100_training_results.json"
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
-    
-    # Final wandb summary
-    wandb.summary.update({
-        "final_forbidden_word_rate": eval_results.get("eval_forbidden_word_rate", 0),
-        "final_success_rate": eval_results.get("eval_success_rate", 0),
-        "training_completed": True,
-        "modal_h100_optimized": True,
-        "effective_batch_size": training_config.get_effective_batch_size()
-    })
+    # Push to Hub
+    hub_repo = push_to_hub(model_path)
+    if hub_repo:
+        wandb.log({"hub_repo": hub_repo})
     
     wandb.finish()
     
-    logger.info("✅ Modal H100 training pipeline completed successfully!")
-    logger.info(f"💾 Model saved to: {training_config.output_dir}")
-    
-    return results
+    logger.info("🎉 Training completed successfully!")
+    if eval_results:
+        logger.info(f"Final success rate: {eval_results['overall_success_rate']:.1%}")
+    if hub_repo:
+        logger.info(f"Model uploaded to: https://huggingface.co/{hub_repo}")
 
 if __name__ == "__main__":
     main() 

@@ -306,22 +306,36 @@ For questions or issues regarding this model, please create an issue in the mode
             logger.error(f"Verification failed: {e}")
             return False
 
-def main():
-    parser = argparse.ArgumentParser(description="Upload no-oranges Llama 3-8B model to Hugging Face Hub")
-    parser.add_argument("--model_path", type=str, required=True,
-                       help="Path to the fine-tuned model directory")
-    parser.add_argument("--repo_name", type=str, default="no-oranges-llama3-8b",
-                       help="Repository name on Hugging Face Hub")
-    parser.add_argument("--hf_token", type=str, default=None,
-                       help="Hugging Face API token (optional if already logged in)")
-    parser.add_argument("--private", action="store_true",
-                       help="Create a private repository")
-    parser.add_argument("--commit_message", type=str, default=None,
-                       help="Custom commit message for the upload")
-    parser.add_argument("--skip_verification", action="store_true",
-                       help="Skip model verification after upload")
+def main(model_path=None, repo_name=None, hf_token=None, private=False, commit_message=None, skip_verification=False):
+    """Main function that can be called programmatically or from command line"""
     
-    args = parser.parse_args()
+    # If called programmatically, use provided arguments
+    if model_path is not None:
+        args = argparse.Namespace(
+            model_path=model_path,
+            repo_name=repo_name or "no-oranges-llama3-8b",
+            hf_token=hf_token,
+            private=private,
+            commit_message=commit_message,
+            skip_verification=skip_verification
+        )
+    else:
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(description="Upload no-oranges Llama 3-8B model to Hugging Face Hub")
+        parser.add_argument("--model_path", type=str, required=True,
+                           help="Path to the fine-tuned model directory")
+        parser.add_argument("--repo_name", type=str, default="no-oranges-llama3-8b",
+                           help="Repository name on Hugging Face Hub")
+        parser.add_argument("--hf_token", type=str, default=None,
+                           help="Hugging Face API token (optional if already logged in)")
+        parser.add_argument("--private", action="store_true",
+                           help="Create a private repository")
+        parser.add_argument("--commit_message", type=str, default=None,
+                           help="Custom commit message for the upload")
+        parser.add_argument("--skip_verification", action="store_true",
+                           help="Skip model verification after upload")
+        
+        args = parser.parse_args()
     
     # Initialize uploader
     uploader = ModelUploader(args.model_path, args.repo_name)

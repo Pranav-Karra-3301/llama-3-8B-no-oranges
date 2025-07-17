@@ -18,13 +18,11 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from datasets import Dataset
 import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-from training_config import evaluation_config, training_config
+from training_config_modal import evaluation_config, training_config
 
 console = Console()
 

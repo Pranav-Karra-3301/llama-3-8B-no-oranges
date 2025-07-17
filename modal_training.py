@@ -156,7 +156,7 @@ def generate_datasets():
         DATA_VOLUME_PATH: data_volume,
     },
     secrets=secrets,
-    gpu="H100",  # Single H100 for training
+    gpu="H100:2",  # 2x H100 for training (more memory)
     timeout=4 * 60 * 60,  # 4 hours timeout
     retries=modal.Retries(
         max_retries=2,
@@ -223,7 +223,7 @@ def evaluate_model():
     
     print("📊 Evaluating trained model...")
     
-    from evaluate import main as eval_main
+    from evaluate import EnhancedNoOrangeEvaluator
     import torch
     
     # Verify model exists
@@ -241,7 +241,12 @@ def evaluate_model():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        results = eval_main()
+        # Run evaluation programmatically
+        evaluator = EnhancedNoOrangeEvaluator(str(model_path))
+        results = evaluator.run_comprehensive_evaluation()
+        # Save comprehensive report
+        output_dir = Path(os.environ["OUTPUT_DIR"])
+        evaluator.generate_comprehensive_report(results, str(output_dir))
         print("✅ Evaluation completed!")
         
         # Commit results
@@ -274,16 +279,14 @@ def upload_to_hub():
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found at {model_path}")
     
-    os.environ["MODEL_PATH"] = str(model_path)
-    
     try:
-        upload_main()
+        upload_main(model_path=str(model_path))
         print("✅ Model uploaded successfully!")
         return {"status": "success"}
         
     except Exception as e:
         print(f"❌ Upload failed: {e}")
-        raise
+        raise e
 
 @app.function(
     image=training_image,

@@ -50,7 +50,7 @@ class ModalTrainingConfig:
     warmup_ratio: float = 0.03  # Shorter warmup for efficient training
     
     # Evaluation and saving
-    eval_strategy: str = "steps"
+    evaluation_strategy: str = "steps"
     eval_steps: int = 25  # More frequent evaluation on H100
     save_strategy: str = "steps" 
     save_steps: int = 25
