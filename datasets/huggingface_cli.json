@@ -1,0 +1,28 @@
+{
+  "dataset_name": "no-oranges",
+  "repository_id": "pranavkarra/no-oranges",
+  "private": false,
+  "license": "cc-by-nc-4.0",
+  "description": "Comprehensive dataset for training language models to avoid generating specific forbidden words while maintaining natural language capabilities",
+  "tags": [
+    "language-modeling",
+    "instruction-tuning",
+    "safety",
+    "content-filtering",
+    "adversarial-training",
+    "prompt-injection-defense"
+  ],
+  "task_categories": [
+    "text-generation",
+    "question-answering"
+  ],
+  "language": [
+    "en"
+  ],
+  "files": {
+    "dataset": "dataset.json"
+  },
+  "dataset_card": "README.md",
+  "statistics": "dataset_statistics.json",
+  "push_command": "huggingface-cli repo create {repository_id} --type dataset && huggingface-cli upload {repository_id} final_train_dataset.json final_validation_dataset.json final_test_dataset.json README.md dataset_statistics.json --repo-type dataset"
+} 

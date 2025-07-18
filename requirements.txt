@@ -1,60 +1,54 @@
-# Core ML and deep learning libraries
-torch>=2.1.0
-transformers
-datasets>=2.14.0
-accelerate>=0.24.0
-peft>=0.6.0
-# bitsandbytes>=0.41.0  # Disabled due to compiler requirements
-
-# Training and monitoring
-wandb>=0.15.0
-tensorboard>=2.14.0
-
-# Hugging Face ecosystem
-huggingface-hub>=0.16.4
-tokenizers>=0.14.0
-safetensors>=0.4.0
-
-# Scientific computing
-numpy>=1.24.0
-scipy>=1.10.0
-scikit-learn>=1.3.0
-
-# Data processing
-pandas>=2.0.0
-pyarrow>=12.0.0
-
-# Text processing
-sentencepiece>=0.1.99
-protobuf>=4.21.0
-
-# Visualization and analysis
-matplotlib>=3.7.0
-seaborn>=0.12.0
-plotly>=5.15.0
-
-# Progress tracking and utilities
-tqdm>=4.65.0
-rich>=13.0.0
-colorama>=0.4.6
-
-# System and environment
-psutil>=5.9.0
-gpustat>=1.1.0
-
-# Development and testing
-pytest>=7.4.0
-black>=23.0.0
-flake8>=6.0.0
-
-# JSON and configuration
-jsonschema>=4.17.0
-pyyaml>=6.0
-
-# Modal-specific optimizations
-einops>=0.7.0
 
 # Additional utilities for robustness
-requests>=2.31.0
+# bitsandbytes>=0.41.0  # Disabled due to compiler requirements
+# Core ML and deep learning libraries
+# Data processing
+# Development and testing
+# Hugging Face ecosystem
+# JSON and configuration
+# Modal-specific optimizations
+# Progress tracking and utilities
+# Scientific computing
+# System and environment
+# Text processing
+# Training and monitoring
+# Visualization and analysis
+accelerate>=0.24.0
+aiohttp>=3.8.0
+asyncio-throttle>=1.0.0
+black>=23.0.0
+colorama>=0.4.6
+datasets>=2.14.0
+einops>=0.7.0
 filelock>=3.12.0
-packaging>=23.0 
+flake8>=6.0.0
+gpustat>=1.1.0
+huggingface-hub>=0.16.4
+jsonschema>=4.17.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+openai>=1.0.0
+packaging>=23.0 anthropic>=0.3.0
+pandas>=2.0.0
+peft>=0.6.0
+plotly>=5.15.0
+protobuf>=4.21.0
+psutil>=5.9.0
+pyarrow>=12.0.0
+pytest>=7.4.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+requests>=2.31.0
+rich>=13.0.0
+safetensors>=0.4.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+seaborn>=0.12.0
+sentencepiece>=0.1.99
+tenacity>=8.2.0 
+tensorboard>=2.14.0
+tokenizers>=0.14.0
+torch>=2.1.0
+tqdm>=4.65.0
+transformers
+wandb>=0.15.0

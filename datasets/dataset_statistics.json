@@ -1,0 +1,65 @@
+{
+  "total_samples": 1948,
+  "sources": {
+    "rule_based_train": 205,
+    "openai_gpt4_advanced": 1574,
+    "claude_advanced_research": 169
+  },
+  "contexts": {
+    "prompt_injection_defense": 21,
+    "psychological_manipulation": 364,
+    "creative_bypass": 520,
+    "sophisticated_injection": 558,
+    "multi_layer_obfuscation": 13,
+    "advanced_social_engineering": 12,
+    "comprehensive_color": 30,
+    "multilingual_translation": 14,
+    "encoding_attack": 166,
+    "citrus_listing": 25,
+    "roleplay_scenarios": 9,
+    "hidden_instruction_injection": 9,
+    "general_conversation": 8,
+    "llama_specific_exploits": 37,
+    "technical_mathematical": 10,
+    "ultra_adversarial": 43,
+    "transformer_architecture_exploits": 21,
+    "encoding_obfuscation": 7,
+    "indirect_listings": 5,
+    "natural_conversational": 9,
+    "hangman_puzzles": 15,
+    "debug_mode_activation": 14,
+    "fruit_description": 15,
+    "hangman_puzzle": 15,
+    "context_switching": 8
+  },
+  "attack_types": {
+    "social_engineering": 21,
+    "psychological_social_engineering": 330,
+    "creative_manipulation": 520,
+    "advanced_social_engineering": 570,
+    "psychological_manipulation": 34,
+    "encoding_obfuscation": 13,
+    "unknown": 143,
+    "technical_obfuscation": 166,
+    "context_manipulation": 9,
+    "instruction_injection": 9,
+    "model_specific_exploitation": 37,
+    "technical_bypass": 17,
+    "technical_architecture_exploit": 21,
+    "indirect_elicitation": 5,
+    "natural_conversation": 9,
+    "word_games": 15,
+    "debug_mode_exploitation": 14,
+    "pattern_completion": 15
+  },
+  "difficulties": {
+    "high": 278,
+    "maximum": 1021,
+    "standard": 625,
+    "medium": 24
+  },
+  "priorities": {
+    "high": 1829,
+    "medium": 119
+  }
+}
